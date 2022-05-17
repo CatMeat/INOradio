@@ -1,8 +1,12 @@
-/**********************************************************************************************************
-  10kHz to 225MHz VFO / RF Generator with Si5351 and Arduino Nano, with Intermediate Frequency (IF_Frequency_kHz) offset
-  (+ or -), RX/TX Selector for QRP Transceivers, Band Presets and Bargraph S-Meter. See the schematics for
-  wiring and README.txt for details. By J. CesarSound - ver 2.0 - Feb/2021.
-***********************************************************************************************************/
+/******************************************************************************************************************* 
+ *  INOradio - https://github.com/CatMeat/INOradio
+ *  Minor redesign to eliminate un-needed functions and refactoring for speed.
+*******************************************************************************************************************/
+
+/*******************************************************************************************************************
+  Initial concept and design by J. CesarSound
+  See: https://create.arduino.cc/projecthub/CesarSound/10khz-to-225mhz-vfo-rf-generator-with-si5351-version-2-bfa619
+*******************************************************************************************************************/
 
 //Libraries
 #include <Wire.h>                 // IDE Standard
@@ -13,18 +17,18 @@
                                   // GFX requires BusIO https://github.com/adafruit/Adafruit_BusIO
 
 // User preferences ------------------------------------------------------
-#define IF_Frequency_kHz         455  // IF_Frequency_kHz frequency in kHz, 0 = for direct, (+/-).
-#define BAND_INIT                  7  // Startup Band (0-12) at startup 
-#define XT_CAL_F               33000  // Si5351 calibration factor, adjust to get exatcly 10MHz. Inverse action.
+#define IF_FREQ_KHZ              455  // IF_FREQ_KHZ frequency in kHz, 0 = for direct, (+/-).
+#define STARTUP_BAND               7  // Startup Band (0-12) at startup 
+#define XT_CAL_FACTOR          33000  // Si5351 calibration factor, adjust to get exatcly 10MHz. Inverse action.
 #define S_GAIN                   303  // Adjust sensitivity of Signal Meter A/D input: 
                                       //     101 = 500mv; 202 = 1v; 303 = 1.5v; 404 = 2v; 505 = 2.5v; 1010 = 5v (max).
 // Analog pins -----------------------------------------------------------
 #define tunestep_pin              A0  // Tune step push button pin.
-#define bandsw_pin                A1  // Band selector push button pin.
-#define rx_tx_pin                 A2  // RX-TX switch pin, RX = open, TX = grounded. When in TX, the IF_Frequency_kHz value is not used.
+#define band_indexsw_pin                A1  // Band selector push button pin.
+#define rx_tx_pin                 A2  // RX-TX switch pin, RX = open, TX = grounded. When in TX, the IF_FREQ_KHZ value is not used.
 #define signal_meter_adc_pin      A3  // The pin used by Signal Meter A/D input.
 
-// digital pins ----------------------------------------------------------
+// Digital pins ----------------------------------------------------------
 #define rotary_pin1                2  // For use with rotary dial
 #define rotary_pin2                3  // For use with rotary dial
 #define rx_led_pin                 4  // Bi-directional Red/Green LED w/ 270 ohm resistor
@@ -38,25 +42,27 @@ Rotary dial = Rotary(rotary_pin1, rotary_pin2);
 Adafruit_SSD1306 display = Adafruit_SSD1306(128, 64, &Wire);
 Si5351 si5351(0x60); //Si5351 I2C Address 0x60
 
-unsigned long freq, freqold, fstep;
-long interfreq = IF_Frequency_kHz, interfreqold = 0;
-long cal = XT_CAL_F;
+unsigned long freq, freqold, frequency_step;
+long interfreq = IF_FREQ_KHZ, interfreqold = 0;
+long cal = XT_CAL_FACTOR;
 unsigned int smval;
 byte encoder = 1; // What is this.. it is always 1, never changed.
-byte stp, n = 1;
-byte band, x, xo;
+byte step_index, n = 1;
+byte band_index, x, xo;
 bool sts = 0;
 unsigned int period = 100;  // i think this can be removed
 unsigned long time_now = 0;
 
 bool transmit = false;
-String bandName = "";
+bool freq_changed = true;
+
+String band_indexName = "";
 String stepName = "";
 
 ISR(PCINT2_vect) {
   unsigned char result = dial.process();
-  if (result == DIR_CW) change_frequency(step_up);
-  else if (result == DIR_CCW) change_frequency(step_down);
+  if (result == DIR_CW) change_freq(step_up);
+  else if (result == DIR_CCW) change_freq(step_down);
 }
 
 void setup() {
@@ -65,7 +71,7 @@ void setup() {
   pinMode(rotary_pin1, INPUT_PULLUP);
   pinMode(rotary_pin2, INPUT_PULLUP);
   pinMode(tunestep_pin, INPUT_PULLUP);
-  pinMode(bandsw_pin, INPUT_PULLUP);
+  pinMode(band_indexsw_pin, INPUT_PULLUP);
   pinMode(rx_tx_pin, INPUT_PULLUP);
   
   display.begin(SSD1306_SWITCHCAPVCC, 0x3C);
@@ -82,55 +88,44 @@ void setup() {
   si5351.output_enable(SI5351_CLK1, 0);
   si5351.output_enable(SI5351_CLK2, 0);
 
-  // dial.begin();  // is this missing?
+  dial.begin();  // is this needed? added per website
   PCICR |= (1 << PCIE2);
   PCMSK2 |= (1 << PCINT18) | (1 << PCINT19);
   sei();
 
-  band = BAND_INIT;
-  bandpresets();
-  stp = 4;
-  setstep();
+  band_index = STARTUP_BAND;
+  band_indexpresets();
+  step_index = 4;
+  setStep();
 }
 
 void loop() {
-  if (freqold != freq) {
-    time_now = millis();
-    tunegen();
-    freqold = freq;
-  }
-
-  if (interfreqold != interfreq) {
-    time_now = millis();
-    tunegen();
-    interfreqold = interfreq;
-  }
-
-  if (xo != x) {
-    time_now = millis();
-    xo = x;
+  if (freq_changed) {
+    freq_changed = false;
+    set_freq();
+    displayfreq();
   }
 
   if (digitalRead(tunestep_pin) == LOW) {
     time_now = (millis() + 300);
-    setstep();
-    delay(300);
+    changeStep();
+    //delay(300);
   }
 
-  if (digitalRead(bandsw_pin) == LOW) {
+  if (digitalRead(band_indexsw_pin) == LOW) {
     time_now = (millis() + 300);
-    inc_preset();
-    delay(300);
+    changeBand();
+    //delay(300);
   }
 
   if (digitalRead(rx_tx_pin) == LOW) {
     time_now = (millis() + 300);
     sts = 1;
-    transmit=true;
+    transmit = true;
   } 
   else {
     sts = 0;
-    transmit= false;
+    transmit = false;
   }
 
   if ((time_now + period) > millis()) {
@@ -140,16 +135,15 @@ void loop() {
   signalread();
 }
 
-
-void change_frequency(short direction) {
-    if (direction == step_up) freq = freq + fstep;
+void change_freq(short direction) {
+    if (direction == step_up) freq = freq + frequency_step;
     if (freq >= 225000000) freq = 225000000; // set upper limit
-    if (direction == step_down) freq = freq - fstep;
-    if (fstep == 1000000 && freq <= 1000000) freq = 1000000;
+    if (direction == step_down) freq = freq - frequency_step;
+    if (frequency_step == 1000000 && freq <= 1000000) freq = 1000000;
     else if (freq < 10000) freq = 10000; // set lower limit
 }
 
-void tunegen() {
+void set_freq() {
   si5351.set_freq((freq + (interfreq * 1000ULL)) * 100ULL, SI5351_CLK0);
 }
 
@@ -175,44 +169,50 @@ void displayfreq() {
   display.print(buffer);
 }
 
+void changeStep(){
+  step_index++;
+  if (step_index > 7) step_index = 0;
+  setStep();
+}
 
-
-void setstep() {
-  switch (stp) {
-    case 1: stp = 2; fstep = 1; break;
-    case 2: stp = 3; fstep = 10; break;
-    case 3: stp = 4; fstep = 1000; break;
-    case 4: stp = 5; fstep = 5000; break;
-    case 5: stp = 6; fstep = 10000; break;
-    case 6: stp = 1; fstep = 1000000; break;
+void setStep() {
+  switch (step_index) {
+    case 0: stepName = "  1 "; frequency_step = 1; break;
+    case 1: stepName = " 10 "; frequency_step = 10; break;
+    case 2: stepName = "100 "; frequency_step = 100; break;
+    case 3: stepName = "  1k"; frequency_step = 1000; break;
+    case 4: stepName = " 10k"; frequency_step = 10000; break;
+    case 5: stepName = "100k"; frequency_step = 100000; break;
+    case 6: stepName = "  1M"; frequency_step = 1000000; break;
+    case 7: stepName = " 10M"; frequency_step = 10000000; break;
   }
+  setStep();
 }
 
-void inc_preset() {
-  band++;
-  if (band > 12) band = 0;
-  bandpresets();
-  delay(50);
+void changeBand() {
+  band_index++;
+  if (band_index > 12) band_index = 0;
+  band_indexpresets();
 }
 
-void bandpresets() {
-  switch (band)  {
-    case  0: freq =   100000; bandName = "GEN";  tunegen(); break;
-    case  1: freq =   526500; bandName = "BC";   break;  // bottom of AM BCB
-    case  2: freq =  1800000; bandName = "160m"; break;  // bottom of 160m
-    case  3: freq =  3500000; bandName = "80m";  break;  // bottom of 80m
-    case  4: freq =  5000000; bandName = "60m";  break;  // bottom of 60m
-    case  5: freq =  7000000; bandName = "40m";  break;  // bottom of 40m
-    case  6: freq = 10000000; bandName = "30m";  break;  // bottom of 30m
-    case  7: freq = 14000000; bandName = "20m";  break;  // bottom of 20m
-    case  8: freq = 18068000; bandName = "17m";  break;  // bottom of 17m
-    case  9: freq = 21000000; bandName = "15m";  break;  // bottom of 15m
-    case 10: freq = 24890000; bandName = "12m";  break;  // bottom of 12m
-    case 11: freq = 28000000; bandName = "10m";  break;  // bottom of 10m
-    case 12: freq = 50000000; bandName = "6m";   break;  // bottom of 6m
+void band_indexpresets() {
+  switch (band_index)  {
+    case  0: freq =   100000; band_indexName = "GEN";  set_freq(); break;
+    case  1: freq =   526500; band_indexName = "BC";   break;  // bottom of AM BCB
+    case  2: freq =  1800000; band_indexName = "160m"; break;  // bottom of 160m
+    case  3: freq =  3500000; band_indexName = "80m";  break;  // bottom of 80m
+    case  4: freq =  5000000; band_indexName = "60m";  break;  // bottom of 60m
+    case  5: freq =  7000000; band_indexName = "40m";  break;  // bottom of 40m
+    case  6: freq = 10000000; band_indexName = "30m";  break;  // bottom of 30m
+    case  7: freq = 14000000; band_indexName = "20m";  break;  // bottom of 20m
+    case  8: freq = 18068000; band_indexName = "17m";  break;  // bottom of 17m
+    case  9: freq = 21000000; band_indexName = "15m";  break;  // bottom of 15m
+    case 10: freq = 24890000; band_indexName = "12m";  break;  // bottom of 12m
+    case 11: freq = 28000000; band_indexName = "10m";  break;  // bottom of 10m
+    case 12: freq = 50000000; band_indexName = "6m";   break;  // bottom of 6m
   }
   si5351.pll_reset(SI5351_PLLA);
-  stp = 4; setstep();
+  freq_changed = true;
 }
 
 void layout() {
@@ -227,11 +227,11 @@ void layout() {
   display.setCursor(59, 23);
   display.print("STEP");
   display.setCursor(54, 33);
-  if (stp == 2) display.print("  1Hz"); if (stp == 3) display.print(" 10Hz"); if (stp == 4) display.print(" 1kHz");
-  if (stp == 5) display.print(" 5kHz"); if (stp == 6) display.print("10kHz"); if (stp == 1) display.print(" 1MHz");
+  if (step_index == 2) display.print("  1Hz"); if (step_index == 3) display.print(" 10Hz"); if (step_index == 4) display.print(" 1kHz");
+  if (step_index == 5) display.print(" 5kHz"); if (step_index == 6) display.print("10kHz"); if (step_index == 1) display.print(" 1MHz");
   display.setTextSize(1);
   display.setCursor(92, 48);
-  display.print("IF_Frequency_kHz:");
+  display.print("IF_FREQ_KHZ:");
   display.setCursor(92, 57);
   display.print(interfreq);
   display.print("k");
@@ -243,17 +243,17 @@ void layout() {
   if (interfreq == 0) display.print("VFO");
   if (interfreq != 0) display.print("L O");
   display.setCursor(91, 28);
-  if (!sts) display.print("RX"); if (!sts) interfreq = IF_Frequency_kHz;
+  if (!sts) display.print("RX"); if (!sts) interfreq = IF_FREQ_KHZ;
   if (sts) display.print("TX"); if (sts) interfreq = 0;
-  bandlist(); drawbargraph();
+  band_indexlist(); drawbargraph();
   display.display();
 }
 
-void bandlist() {
+void band_indexlist() {
   display.setTextSize(2);
   display.setCursor(0, 25);
-  display.print(bandName);
-  if (band == 0) interfreq = 0; else if (!sts) interfreq = IF_Frequency_kHz;
+  display.print(band_indexName);
+  if (band_index == 0) interfreq = 0; else if (!sts) interfreq = IF_FREQ_KHZ;
 }
 
 void signalread() {
