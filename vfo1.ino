@@ -6,11 +6,11 @@
 
 //Libraries
 #include <SPI.h>
-#include <Wire.h>                 //IDE Standard
-#include <Rotary.h>               //Ben Buxton https://github.com/brianlow/Rotary
-#include <si5351.h>               //Etherkit https://github.com/etherkit/Si5351Arduino
-#include <Adafruit_GFX.h>         //Adafruit GFX https://github.com/adafruit/Adafruit-GFX-Library
-#include <Adafruit_SH110X.h>
+#include <Wire.h>                 // IDE Standard
+#include <Rotary.h>               // Ben Buxton https://github.com/brianlow/Rotary
+#include <si5351.h>               // Etherkit https://github.com/etherkit/Si5351Arduino
+#include <Adafruit_GFX.h>         // Adafruit GFX https://github.com/adafruit/Adafruit-GFX-Library
+#include <Adafruit_SH110X.h>      // SH1106 128x64 OLED display
 
 //User preferences
 //------------------------------------------------------------------------------------------------------------
@@ -26,13 +26,14 @@
 
 // DISPLAY settings
 //------------------------------------------------------------------------------------------------------------
-#define i2c_Address 0x3c // initialize with the I2C addr 0x3C Typically eBay OLED's
-#define SCREEN_WIDTH 128 // OLED display width, in pixels
-#define SCREEN_HEIGHT 64 // OLED display height, in pixels
-#define OLED_RESET -1    // QT-PY / XIAO
+#define i2c_Address    0x3c // initialize with the I2C addr 0x3C Typically eBay OLED's
+#define SCREEN_WIDTH    128 // OLED display width, in pixels
+#define SCREEN_HEIGHT    64 // OLED display height, in pixels
+#define OLED_RESET       -1 // QT-PY / XIAO
 //------------------------------------------------------------------------------------------------------------
 
-
+#define rx_led_pin       4  // Bi-directional Red/Green LED w/ 270 ohm resistor
+#define tx_led_pin       5  // Bi-directional Red/Green LED
 
 Rotary rotaryDial = Rotary(2, 3);
 Adafruit_SH1106G display = Adafruit_SH1106G(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
@@ -59,31 +60,21 @@ ISR(PCINT2_vect) {
 }
 
 void set_frequency(short dir) {
-  if (encoder == 1) {                         //Up/Down frequency
-    if (dir == 1) freq = freq + fstep;
-    if (freq >= 60000000) freq = 60000000;
-    if (dir == -1) {
-      if (freq > fstep) freq = freq - fstep;
-      else freq = 100000;
-    }
-    if (freq < 100000) freq = 100000;
+  if (dir == 1) freq = freq + fstep;
+  if (freq >= 60000000) freq = 60000000;
+  if (dir == -1) {
+    if (freq > fstep) freq = freq - fstep;
+    else freq = 100000;
   }
-  if (encoder == 1) {                       //Up/Down graph tune pointer
-    if (dir == 1) n = n + 1;
-    if (n > 42) n = 1;
-    if (dir == -1) n = n - 1;
-    if (n < 1) n = 42;
-  }
+  if (freq < 100000) freq = 100000;
 }
 
 void setup() {
   Wire.begin();
-
+  setLED(); 
   delay(250); // wait for the OLED to power up
   display.begin(i2c_Address, true);
-  display.display(); // ADAfruit logo
-  delay(2000);
-  
+ 
   display.clearDisplay();
   display.setTextColor(SH110X_WHITE);
   display.display();
@@ -93,6 +84,8 @@ void setup() {
   pinMode(tunestep, INPUT_PULLUP);
   pinMode(band, INPUT_PULLUP);
   pinMode(rx_tx, INPUT_PULLUP);
+  pinMode(rx_led_pin,OUTPUT);
+  pinMode(tx_led_pin,OUTPUT);
 
   startup_text();  //If you hang on startup, comment
 
@@ -102,8 +95,7 @@ void setup() {
   //si5351.output_enable(SI5351_CLK0, 1);                  //1 - Enable / 0 - Disable CLK
   //si5351.output_enable(SI5351_CLK1, 0);
   //si5351.output_enable(SI5351_CLK2, 0);
-  
-  startup_text2();
+
   rotaryDial.begin();
   PCICR |= (1 << PCIE2);
   PCMSK2 |= (1 << PCINT18) | (1 << PCINT19);
@@ -135,7 +127,6 @@ void loop() {
 
   if (digitalRead(tunestep) == LOW) {
     time_now = (millis() + 300);
-    //setstep();
     inc_step();
     setstep();
     delay(300);
@@ -151,6 +142,7 @@ void loop() {
     time_now = (millis() + 300);
     sts = 1;
   } else sts = 0;
+  setLED();
 
   if ((time_now + period) > millis()) {
     displayfreq();
@@ -159,11 +151,15 @@ void loop() {
   signalread();
 }
 
-void tunegen() {
-  //si5351.set_freq((freq + (interfreq * 1000ULL)) * 100ULL, SI5351_CLK0);
+void setLED(){
+  digitalWrite(rx_led_pin,LOW);
+  digitalWrite(tx_led_pin,LOW);
+  if (sts == 0) digitalWrite(rx_led_pin,HIGH);
+  else digitalWrite(tx_led_pin,HIGH);
+}
 
-  // check frequency and set appropriate band
-  
+void tunegen() {
+  //si5351.set_freq((freq + (interfreq * 1000ULL)) * 100ULL, SI5351_CLK0);  
 }
 
 void displayfreq() {
@@ -254,33 +250,26 @@ void bandpresets() {
 
 void layout() {
   display.setTextColor(SH110X_WHITE);
-  //display.drawLine(0, 20, 127, 20, SH110X_WHITE);
   display.drawLine(0, 44, 127, 44, SH110X_WHITE);
   display.drawLine(0, 54, 105, 54, SH110X_WHITE);
   display.drawLine(105, 44, 105, 63, SH110X_WHITE);
   display.drawLine(18, 54, 18, 63, SH110X_WHITE);
-  //display.drawLine(15, 55, 82, 55, SH110X_WHITE);
   
   barEnd = barStart+11;
-  //display.drawLine(barStart, 0, 10,1, SH110X_WHITE);
   display.fillRect(barStart, 0, 11, 2, SH110X_WHITE);
-
   
   display.setTextSize(2);
   display.setCursor(89, 29);
   display.print("USB");
   
   display.setTextSize(1);
-  
   display.setCursor(5, 19);  
   display.print("VFO A");
   
   display.setCursor(106, 19);
   if (freq < 1000000) display.print("kHz");
   if (freq >= 1000000) display.print("MHz");
-  //display.setCursor(110, 33);
-  //if (interfreq == 0) display.print("VFO");
-  //if (interfreq != 0) display.print("L O");
+
   display.setCursor(112, 51);
   if (!sts) display.print("RX"); if (!sts) interfreq = IF;
   if (sts) display.print("TX"); if (sts) interfreq = 0;
@@ -301,30 +290,9 @@ void signalread() {
 }
 
 void drawbargraph() {
-  byte y = map(n, 1, 42, 1, 14);
   display.setTextSize(1);
   display.setCursor(19, 46);
   display.print("0 3 5 7 9 20 +");
-  //Pointer
-/*  display.setCursor(0, 48); display.print("TU");
-  switch (y) {
-    case 1: display.fillRect(15, 48, 2, 6, SH110X_WHITE); break;
-    case 2: display.fillRect(20, 48, 2, 6, SH110X_WHITE); break;
-    case 3: display.fillRect(25, 48, 2, 6, SH110X_WHITE); break;
-    case 4: display.fillRect(30, 48, 2, 6, SH110X_WHITE); break;
-    case 5: display.fillRect(35, 48, 2, 6, SH110X_WHITE); break;
-    case 6: display.fillRect(40, 48, 2, 6, SH110X_WHITE); break;
-    case 7: display.fillRect(45, 48, 2, 6, SH110X_WHITE); break;
-    case 8: display.fillRect(50, 48, 2, 6, SH110X_WHITE); break;
-    case 9: display.fillRect(55, 48, 2, 6, SH110X_WHITE); break;
-    case 10: display.fillRect(60, 48, 2, 6, SH110X_WHITE); break;
-    case 11: display.fillRect(65, 48, 2, 6, SH110X_WHITE); break;
-    case 12: display.fillRect(70, 48, 2, 6, SH110X_WHITE); break;
-    case 13: display.fillRect(75, 48, 2, 6, SH110X_WHITE); break;
-    case 14: display.fillRect(80, 48, 2, 6, SH110X_WHITE); break;
-  }
-*/
-  //Bargraph
   display.setCursor(0, 57); display.print("SIG");
   switch (x) {
     case 14: display.fillRect(99, 58, 2, 6, SH110X_WHITE);
@@ -345,18 +313,12 @@ void drawbargraph() {
 }
 
 void startup_text() {
+  display.setTextSize(2); 
+  display.setCursor(34, 16);
+  display.print("K4TFJ");
   display.setTextSize(1); 
-  display.setCursor(23, 16);
-  display.print("Si5351/SH1106");
   display.setCursor(9, 40);
   display.print("INOradio - Ver 1.0");
-  display.display(); delay(2000);
-}
-
-void startup_text2() {
-  display.clearDisplay();
-  display.setTextSize(2); 
-  display.setCursor(35, 24);
-  display.print("K4TFJ");
-  display.display(); delay(2000);
+  display.display(); 
+  delay(4000);
 }
